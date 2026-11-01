@@ -6,9 +6,14 @@ It talks to the Linuwu-Sense kernel module through sysfs. Keyboard, fan and
 battery files need the user to be in the linuwu_sense group. The power mode
 file is made group-writable by the bundled tmpfiles rule; without it, the
 panel falls back to pkexec.
+
+`nitro-panel --daemon` is the optional background service. It applies a
+profile when the charger is plugged in or out, and shows the new power mode
+when the NitroSense key is pressed.
 """
 
 import glob
+import json
 import os
 import sys
 
@@ -18,15 +23,18 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 APP_ID = "io.github.ardakorkmaz0.NitroPanel"
+DAEMON_UNIT = "nitro-panel-daemon.service"
+NOTIFY_TIMEOUT_MS = 3000
 
 BASE = "/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi"
 FOUR_ZONE = f"{BASE}/four_zoned_kb/four_zone_mode"
 PER_ZONE = f"{BASE}/four_zoned_kb/per_zone_mode"
 PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
 PLATFORM_CHOICES = "/sys/firmware/acpi/platform_profile_choices"
+CONFIG_FILE = os.path.join(GLib.get_user_config_dir(), "nitro-panel", "config.json")
 
 # (driver mode, label, uses color, uses speed, uses direction)
 # Mode 0 (static) is left out: "Zone colors" covers it.
@@ -41,13 +49,14 @@ EFFECTS = [
 ]
 
 # platform_profile value and the NitroSense mode the driver maps it to
-PROFILES = [
+POWER_MODES = [
     ("low-power", "Eco"),
     ("quiet", "Quiet"),
     ("balanced", "Balanced"),
     ("balanced-performance", "Performance"),
     ("performance", "Turbo"),
 ]
+POWER_LABELS = dict(POWER_MODES)
 
 PRESETS = [
     ("Red", "ff0000"),
@@ -63,8 +72,33 @@ EXTRA_SWITCHES = [
     ("lcd_override", "LCD overdrive", "Faster pixel response, may add ghosting"),
 ]
 
+# Written to the config file the first time, then the user's to change.
+DEFAULT_PROFILES = {
+    "Gaming": {
+        "power": "performance",
+        "fans": "auto",
+        "keyboard": {"mode": "zones", "zones": ["ff0000"] * 4, "brightness": 100},
+    },
+    "Quiet": {
+        "power": "quiet",
+        "fans": "auto",
+        "keyboard": {"mode": "zones", "zones": ["ffffff"] * 4, "brightness": 30},
+    },
+    "Battery saver": {
+        "power": "low-power",
+        "fans": "auto",
+        "keyboard": {"mode": "zones", "zones": ["ffffff"] * 4, "brightness": 0},
+    },
+}
+
+
+def log(message):
+    print(f"nitro-panel: {message}", file=sys.stderr, flush=True)
+
 
 def read(path):
+    if path is None:
+        return None
     try:
         with open(path) as f:
             return f.read().strip()
@@ -91,10 +125,11 @@ def hex_to_rgba(value):
     return rgba
 
 
-def find_sense_dir():
-    for name in ("nitro_sense", "predator_sense"):
-        path = f"{BASE}/{name}"
-        if os.path.isdir(path):
+def sense_path(name):
+    """Path of a NitroSense/PredatorSense setting, or None if this model lacks it."""
+    for folder in ("nitro_sense", "predator_sense"):
+        path = f"{BASE}/{folder}/{name}"
+        if os.path.exists(path):
             return path
     return None
 
@@ -110,6 +145,112 @@ def find_battery():
     for path in sorted(glob.glob("/sys/class/power_supply/BAT*")):
         return path
     return None
+
+
+def battery_health(battery):
+    """Current full capacity against the design capacity, as text."""
+    for kind, unit in (("energy", "Wh"), ("charge", "Ah")):
+        full = read(f"{battery}/{kind}_full")
+        design = read(f"{battery}/{kind}_full_design")
+        if full and design and full.isdigit() and design.isdigit() and int(design):
+            percent = round(100 * int(full) / int(design))
+            # sysfs reports µWh / µAh
+            return (f"Health: {percent}% of original capacity "
+                    f"({int(full) / 1e6:.2f} of {int(design) / 1e6:.2f} {unit})")
+    return None
+
+
+def temperature(path):
+    value = read(path)
+    return f"{int(value) // 1000}°C" if value and value.lstrip("-").isdigit() else "?"
+
+
+# --- profiles ---------------------------------------------------------------
+
+
+def load_config():
+    config = {
+        "profiles": json.loads(json.dumps(DEFAULT_PROFILES)),
+        "on_battery": None,
+        "on_ac": None,
+        "mode_key": False,
+    }
+    try:
+        with open(CONFIG_FILE) as f:
+            config.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return config
+
+
+def save_config(config):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    tmp = f"{CONFIG_FILE}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(config, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)
+
+
+def keyboard_value(keyboard):
+    """The sysfs file and value for the keyboard part of a profile."""
+    brightness = int(keyboard.get("brightness", 100))
+    if keyboard.get("mode", "zones") == "zones":
+        return PER_ZONE, f"{','.join(keyboard['zones'])},{brightness}"
+    color = keyboard.get("color", "ffffff")
+    r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+    speed = keyboard.get("speed", 5)
+    direction = keyboard.get("direction", 2)
+    return FOUR_ZONE, f"{keyboard['mode']},{speed},{brightness},{direction},{r},{g},{b}"
+
+
+def fan_value(fans):
+    if fans == "auto":
+        return "0,0"
+    if fans == "max":
+        return "100,100"
+    cpu, gpu = (int(v) for v in fans)
+    # The driver treats 100,100 as max mode; stay in custom mode
+    if cpu == 100 and gpu == 100:
+        gpu = 95
+    return f"{cpu},{gpu}"
+
+
+def apply_profile(profile, power_fallback=None):
+    """Apply a saved profile. Returns a list of problems, empty when all went well."""
+    problems = []
+
+    power = profile.get("power")
+    if power:
+        if power not in (read(PLATFORM_CHOICES) or "").split():
+            problems.append(f"{POWER_LABELS.get(power, power)} mode is not available right now")
+        else:
+            try:
+                write(PLATFORM_PROFILE, power)
+            except PermissionError:
+                if power_fallback:
+                    power_fallback(power)
+                else:
+                    problems.append("no permission to change the power mode")
+            except OSError as err:
+                problems.append(f"power mode: {err.strerror}")
+
+    steps = []
+    try:
+        if "fans" in profile and sense_path("fan_speed"):
+            steps.append(("fans", sense_path("fan_speed"), fan_value(profile["fans"])))
+        if "keyboard" in profile and os.path.exists(PER_ZONE):
+            steps.append(("keyboard", *keyboard_value(profile["keyboard"])))
+    except (KeyError, TypeError, ValueError):
+        problems.append("the profile data is damaged")
+    for name, path, value in steps:
+        try:
+            write(path, value)
+        except OSError as err:
+            problems.append(f"{name}: {err.strerror}")
+    return problems
+
+
+# --- window helpers ---------------------------------------------------------
 
 
 def section(title):
@@ -170,7 +311,8 @@ class NitroPanel(Gtk.ApplicationWindow):
 
         self._pending = {}
         self._updating = False
-        self.sense = find_sense_dir()
+        self._info_timer = None
+        self.config = load_config()
         self.hwmon = find_hwmon("acer")
         self.battery = find_battery()
         self.has_kb = os.path.exists(PER_ZONE)
@@ -181,6 +323,7 @@ class NitroPanel(Gtk.ApplicationWindow):
             stack.add_titled(self.build_keyboard(), "keyboard", "Keyboard")
         stack.add_titled(self.build_power(), "power", "Power")
         stack.add_titled(self.build_battery(), "battery", "Battery")
+        stack.add_titled(self.build_profiles(), "profiles", "Profiles")
 
         header = Gtk.HeaderBar(show_close_button=True)
         header.set_custom_title(Gtk.StackSwitcher(stack=stack))
@@ -200,7 +343,7 @@ class NitroPanel(Gtk.ApplicationWindow):
             self.show_message(
                 "The linuwu_sense kernel module is not loaded. Install Linuwu-Sense first.",
             )
-        elif self.sense_path("fan_speed") and not writable(self.sense_path("fan_speed")):
+        elif sense_path("fan_speed") and not writable(sense_path("fan_speed")):
             self.show_message(
                 "No write access yet. Run: sudo usermod -aG linuwu_sense $USER, "
                 "then log out and back in.",
@@ -213,16 +356,19 @@ class NitroPanel(Gtk.ApplicationWindow):
 
     # --- helpers ----------------------------------------------------------
 
-    def sense_path(self, name):
-        if not self.sense:
-            return None
-        path = f"{self.sense}/{name}"
-        return path if os.path.exists(path) else None
-
     def show_message(self, text, kind=Gtk.MessageType.ERROR):
+        if self._info_timer:
+            GLib.source_remove(self._info_timer)
+            self._info_timer = None
         self.info.set_message_type(kind)
         self.info_label.set_text(text)
         self.info.set_revealed(True)
+        if kind == Gtk.MessageType.INFO:
+            def hide():
+                self._info_timer = None
+                self.info.set_revealed(False)
+                return False
+            self._info_timer = GLib.timeout_add_seconds(3, hide)
 
     def apply(self, path, value):
         try:
@@ -319,7 +465,7 @@ class NitroPanel(Gtk.ApplicationWindow):
         box.pack_start(section("Quick colors"), False, False, 0)
         box.pack_start(presets, False, False, 0)
 
-        path = self.sense_path("backlight_timeout")
+        path = sense_path("backlight_timeout")
         if writable(path):
             self.backlight_timeout = Gtk.Switch()
             self.backlight_timeout.connect("notify::active", self.on_switch, path)
@@ -363,18 +509,25 @@ class NitroPanel(Gtk.ApplicationWindow):
         self._updating = False
         self.debounce("kb", self.apply_keyboard, 0)
 
-    def apply_keyboard(self):
+    def capture_keyboard(self):
         brightness = int(self.brightness.get_value())
         mode_id = self.kb_mode.get_active_id()
         if mode_id == "zones":
-            colors = ",".join(rgba_to_hex(b.get_rgba()) for b in self.zone_buttons)
-            self.apply(PER_ZONE, f"{colors},{brightness}")
-            return
-        c = self.effect_color.get_rgba()
-        r, g, b = (round(v * 255) for v in (c.red, c.green, c.blue))
-        speed = int(self.speed.get_value())
-        direction = self.direction.get_active_id()
-        self.apply(FOUR_ZONE, f"{mode_id},{speed},{brightness},{direction},{r},{g},{b}")
+            return {
+                "mode": "zones",
+                "zones": [rgba_to_hex(b.get_rgba()) for b in self.zone_buttons],
+                "brightness": brightness,
+            }
+        return {
+            "mode": int(mode_id),
+            "speed": int(self.speed.get_value()),
+            "direction": int(self.direction.get_active_id()),
+            "color": rgba_to_hex(self.effect_color.get_rgba()),
+            "brightness": brightness,
+        }
+
+    def apply_keyboard(self):
+        self.apply(*keyboard_value(self.capture_keyboard()))
 
     # --- power ------------------------------------------------------------
 
@@ -382,14 +535,14 @@ class NitroPanel(Gtk.ApplicationWindow):
         box = page()
 
         box.pack_start(section("Power mode"), False, False, 0)
-        profiles, self.profile_buttons = linked_radios(PROFILES, self.on_profile_toggled)
-        box.pack_start(profiles, False, False, 0)
+        modes, self.power_buttons = linked_radios(POWER_MODES, self.on_power_toggled)
+        box.pack_start(modes, False, False, 0)
         box.pack_start(dim("Modes your laptop does not offer right now are greyed out."),
                        False, False, 0)
 
         self.fan_buttons = {}
         self.fan_scales = []
-        if self.sense_path("fan_speed"):
+        if sense_path("fan_speed"):
             box.pack_start(section("Fans"), False, False, 0)
             fan_modes, self.fan_buttons = linked_radios(
                 [("auto", "Auto"), ("max", "Max"), ("custom", "Custom")], self.on_fan_toggled,
@@ -403,23 +556,34 @@ class NitroPanel(Gtk.ApplicationWindow):
                 box.pack_start(row(f"{name} (%)", scale), False, False, 0)
                 self.fan_scales.append(scale)
 
-        self.rpm_label = dim("")
-        box.pack_start(self.rpm_label, False, False, 0)
+        self.sensor_labels = {}
+        if self.hwmon:
+            box.pack_start(section("Sensors"), False, False, 0)
+            grid = Gtk.Grid(column_spacing=24, row_spacing=4)
+            for i, name in enumerate(("CPU", "GPU")):
+                grid.attach(Gtk.Label(label=name, xalign=0), 0, i, 1, 1)
+                temp = Gtk.Label(xalign=1, width_chars=6)
+                rpm = Gtk.Label(xalign=1, width_chars=10)
+                rpm.get_style_context().add_class("dim-label")
+                grid.attach(temp, 1, i, 1, 1)
+                grid.attach(rpm, 2, i, 1, 1)
+                self.sensor_labels[name] = (temp, rpm)
+            box.pack_start(grid, False, False, 0)
         return box
 
-    def on_profile_toggled(self, button, key):
+    def on_power_toggled(self, button, key):
         if self._updating or not button.get_active():
             return
         try:
             write(PLATFORM_PROFILE, key)
         except PermissionError:
-            self.set_profile_with_pkexec(key)
+            self.set_power_with_pkexec(key)
             return
         except OSError as err:
             self.show_message(f"Could not change the power mode: {err.strerror}")
         self.refresh()
 
-    def set_profile_with_pkexec(self, key):
+    def set_power_with_pkexec(self, key):
         """Fallback when the tmpfiles rule is not installed: ask polkit for a password."""
         try:
             proc = Gio.Subprocess.new(
@@ -447,18 +611,15 @@ class NitroPanel(Gtk.ApplicationWindow):
             scale.set_sensitive(key == "custom")
         self.debounce("fan", self.apply_fan, 0)
 
-    def apply_fan(self):
+    def capture_fans(self):
         if self.fan_buttons["auto"].get_active():
-            value = "0,0"
-        elif self.fan_buttons["max"].get_active():
-            value = "100,100"
-        else:
-            cpu, gpu = (int(s.get_value()) for s in self.fan_scales)
-            # The driver treats 100,100 as max mode; stay in custom mode
-            if cpu == 100 and gpu == 100:
-                gpu = 95
-            value = f"{cpu},{gpu}"
-        self.apply(self.sense_path("fan_speed"), value)
+            return "auto"
+        if self.fan_buttons["max"].get_active():
+            return "max"
+        return [int(s.get_value()) for s in self.fan_scales]
+
+    def apply_fan(self):
+        self.apply(sense_path("fan_speed"), fan_value(self.capture_fans()))
 
     # --- battery ----------------------------------------------------------
 
@@ -467,9 +628,11 @@ class NitroPanel(Gtk.ApplicationWindow):
 
         self.battery_label = Gtk.Label(xalign=0)
         box.pack_start(self.battery_label, False, False, 0)
+        self.health_label = dim("")
+        box.pack_start(self.health_label, False, False, 0)
 
         self.limiter = None
-        path = self.sense_path("battery_limiter")
+        path = sense_path("battery_limiter")
         if path:
             self.limiter = Gtk.Switch()
             self.limiter.connect("notify::active", self.on_switch, path)
@@ -480,7 +643,7 @@ class NitroPanel(Gtk.ApplicationWindow):
             )
 
         self.usb = None
-        if self.sense_path("usb_charging"):
+        if sense_path("usb_charging"):
             self.usb = Gtk.ComboBoxText()
             self.usb.append("0", "Off")
             for level in (10, 20, 30):
@@ -493,12 +656,12 @@ class NitroPanel(Gtk.ApplicationWindow):
             )
 
         self.extra_switches = {}
-        extras = [(n, t, h) for n, t, h in EXTRA_SWITCHES if writable(self.sense_path(n))]
+        extras = [(n, t, h) for n, t, h in EXTRA_SWITCHES if writable(sense_path(n))]
         if extras:
             box.pack_start(section("Other"), False, False, 0)
         for name, title, hint in extras:
             switch = Gtk.Switch()
-            switch.connect("notify::active", self.on_switch, self.sense_path(name))
+            switch.connect("notify::active", self.on_switch, sense_path(name))
             box.pack_start(row(title, switch, hint), False, False, 0)
             self.extra_switches[name] = switch
         return box
@@ -509,7 +672,178 @@ class NitroPanel(Gtk.ApplicationWindow):
 
     def on_usb(self, combo):
         if not self._updating:
-            self.apply(self.sense_path("usb_charging"), combo.get_active_id())
+            self.apply(sense_path("usb_charging"), combo.get_active_id())
+
+    # --- profiles ---------------------------------------------------------
+
+    def build_profiles(self):
+        box = page()
+
+        box.pack_start(section("Profiles"), False, False, 0)
+        box.pack_start(dim("A profile stores the power mode, fan setting and keyboard lighting."),
+                       False, False, 0)
+        self.profile_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.profile_list.get_style_context().add_class("frame")
+        empty = dim("No profiles yet")
+        empty.set_margin_top(12)
+        empty.set_margin_bottom(12)
+        empty.set_xalign(0.5)
+        empty.show()
+        self.profile_list.set_placeholder(empty)
+        box.pack_start(self.profile_list, False, False, 0)
+
+        save_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.profile_name = Gtk.Entry(placeholder_text="Name for the current settings")
+        self.profile_name.connect("activate", self.on_save_profile)
+        save = Gtk.Button(label="Save")
+        save.connect("clicked", self.on_save_profile)
+        save_row.pack_start(self.profile_name, True, True, 0)
+        save_row.pack_start(save, False, False, 0)
+        box.pack_start(save_row, False, False, 0)
+
+        box.pack_start(section("Automatic"), False, False, 0)
+        self.auto_combos = {}
+        for key, title, hint in (
+            ("on_battery", "On battery", "Applied when you unplug the charger"),
+            ("on_ac", "Plugged in", "Applied when you plug the charger in"),
+        ):
+            combo = Gtk.ComboBoxText()
+            combo.connect("changed", self.on_auto_changed, key)
+            box.pack_start(row(title, combo, hint), False, False, 0)
+            self.auto_combos[key] = combo
+        self.mode_key = Gtk.Switch()
+        self.mode_key.connect("notify::active", self.on_mode_key)
+        box.pack_start(
+            row("NitroSense key notification", self.mode_key,
+                "Show the new power mode, with a button that opens this panel"),
+            False, False, 0,
+        )
+        box.pack_start(dim("These run in a small background service that starts with your session."),
+                       False, False, 0)
+
+        self.fill_profiles()
+        return box
+
+    def fill_profiles(self):
+        self._updating = True
+        for child in self.profile_list.get_children():
+            self.profile_list.remove(child)
+        names = sorted(self.config["profiles"], key=str.lower)
+        for name in names:
+            line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            line.set_border_width(6)
+            line.pack_start(Gtk.Label(label=name, xalign=0), True, True, 0)
+            apply = Gtk.Button(label="Apply")
+            apply.connect("clicked", self.on_apply_profile, name)
+            delete = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+            delete.set_tooltip_text(f"Delete {name}")
+            delete.connect("clicked", self.on_delete_profile, name)
+            line.pack_start(apply, False, False, 0)
+            line.pack_start(delete, False, False, 0)
+            self.profile_list.add(line)
+        self.profile_list.show_all()
+
+        for key, combo in self.auto_combos.items():
+            combo.remove_all()
+            combo.append("off", "Do nothing")
+            for name in names:
+                combo.append(f"profile:{name}", name)
+            chosen = self.config.get(key)
+            combo.set_active_id(f"profile:{chosen}" if chosen in self.config["profiles"] else "off")
+        self.mode_key.set_active(bool(self.config.get("mode_key")))
+        self._updating = False
+
+    def capture(self):
+        profile = {}
+        power = read(PLATFORM_PROFILE)
+        if power:
+            profile["power"] = power
+        if self.fan_buttons:
+            profile["fans"] = self.capture_fans()
+        if self.has_kb:
+            profile["keyboard"] = self.capture_keyboard()
+        return profile
+
+    def on_save_profile(self, _widget):
+        name = self.profile_name.get_text().strip()
+        if not name:
+            self.show_message("Type a name for the profile first.", Gtk.MessageType.WARNING)
+            return
+        self.config["profiles"][name] = self.capture()
+        self.save()
+        self.profile_name.set_text("")
+        self.fill_profiles()
+        self.show_message(f"Saved “{name}”.", Gtk.MessageType.INFO)
+
+    def on_apply_profile(self, _button, name):
+        problems = apply_profile(self.config["profiles"][name], self.set_power_with_pkexec)
+        self.load_state()
+        self.refresh()
+        if problems:
+            self.show_message(f"Applied “{name}”, except: {'; '.join(problems)}.",
+                              Gtk.MessageType.WARNING)
+        else:
+            self.show_message(f"Applied “{name}”.", Gtk.MessageType.INFO)
+
+    def on_delete_profile(self, _button, name):
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE, text=f"Delete the profile “{name}”?",
+        )
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Delete", Gtk.ResponseType.ACCEPT)
+        confirmed = dialog.run() == Gtk.ResponseType.ACCEPT
+        dialog.destroy()
+        if not confirmed:
+            return
+        del self.config["profiles"][name]
+        for key in self.auto_combos:
+            if self.config.get(key) == name:
+                self.config[key] = None
+        self.save()
+        self.fill_profiles()
+        self.update_daemon()
+
+    def on_auto_changed(self, combo, key):
+        if self._updating:
+            return
+        active = combo.get_active_id() or "off"
+        self.config[key] = active.removeprefix("profile:") if active != "off" else None
+        self.save()
+        self.update_daemon()
+
+    def on_mode_key(self, switch, _param):
+        if self._updating:
+            return
+        self.config["mode_key"] = switch.get_active()
+        self.save()
+        self.update_daemon()
+
+    def save(self):
+        try:
+            save_config(self.config)
+        except OSError as err:
+            self.show_message(f"Could not save settings: {err.strerror}")
+
+    def update_daemon(self):
+        """Run the background service only while something needs it."""
+        wanted = bool(self.config.get("on_battery") or self.config.get("on_ac")
+                      or self.config.get("mode_key"))
+        action = "enable" if wanted else "disable"
+        try:
+            proc = Gio.Subprocess.new(
+                ["systemctl", "--user", action, "--now", DAEMON_UNIT],
+                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE,
+            )
+        except GLib.Error as err:
+            self.show_message(f"Could not {action} the background service: {err.message}")
+            return
+
+        def done(proc, result):
+            _ok, _out, err = proc.communicate_utf8_finish(result)
+            if proc.get_exit_status() != 0 and wanted:
+                self.show_message(f"Could not start the background service: {(err or '').strip()}")
+
+        proc.communicate_utf8_async(None, None, done)
 
     # --- reading state ----------------------------------------------------
 
@@ -520,12 +854,12 @@ class NitroPanel(Gtk.ApplicationWindow):
                 self.load_keyboard()
             self.load_fans()
             if self.limiter:
-                self.limiter.set_active(read(self.sense_path("battery_limiter")) == "1")
+                self.limiter.set_active(read(sense_path("battery_limiter")) == "1")
             if self.backlight_timeout:
-                self.backlight_timeout.set_active(read(self.sense_path("backlight_timeout")) == "1")
+                self.backlight_timeout.set_active(read(sense_path("backlight_timeout")) == "1")
             for name, switch in self.extra_switches.items():
-                switch.set_active(read(self.sense_path(name)) == "1")
-            usb = read(self.sense_path("usb_charging")) if self.usb else None
+                switch.set_active(read(sense_path(name)) == "1")
+            usb = read(sense_path("usb_charging")) if self.usb else None
             if usb in ("0", "10", "20", "30"):
                 self.usb.set_active_id(usb)
         finally:
@@ -538,8 +872,8 @@ class NitroPanel(Gtk.ApplicationWindow):
         try:
             if four:
                 mode, speed, brightness, direction, r, g, b = (int(v) for v in four.split(","))
+                self.kb_mode.set_active_id(str(mode) if mode != 0 else "zones")
                 if mode != 0:
-                    self.kb_mode.set_active_id(str(mode))
                     self.speed.set_value(max(speed, 1))
                     if direction in (1, 2):
                         self.direction.set_active_id(str(direction))
@@ -551,12 +885,12 @@ class NitroPanel(Gtk.ApplicationWindow):
                     button.set_rgba(hex_to_rgba(color))
                 self.brightness.set_value(int(brightness))
         except ValueError:
-            pass  # unexpected driver output: keep the defaults
+            pass  # unexpected driver output: keep what the widgets show
 
     def load_fans(self):
         if not self.fan_buttons:
             return
-        fan = read(self.sense_path("fan_speed"))
+        fan = read(sense_path("fan_speed"))
         if fan in (None, "0,0"):
             self.fan_buttons["auto"].set_active(True)
         elif fan == "100,100":
@@ -571,21 +905,26 @@ class NitroPanel(Gtk.ApplicationWindow):
     def refresh(self):
         self._updating = True
         choices = (read(PLATFORM_CHOICES) or "").split()
-        for key, button in self.profile_buttons.items():
+        for key, button in self.power_buttons.items():
             button.set_sensitive(key in choices)
         active = read(PLATFORM_PROFILE)
-        if active in self.profile_buttons:
-            self.profile_buttons[active].set_active(True)
+        if active in self.power_buttons:
+            self.power_buttons[active].set_active(True)
         self._updating = False
 
-        if self.hwmon:
-            fans = [read(f"{self.hwmon}/fan{i}_input") for i in (1, 2)]
-            self.rpm_label.set_text(f"Current speed: CPU {fans[0] or '?'} RPM · GPU {fans[1] or '?'} RPM")
+        # The embedded controller reports these, so reading them never
+        # wakes a sleeping NVIDIA GPU.
+        for i, name in enumerate(("CPU", "GPU"), start=1):
+            if name in self.sensor_labels:
+                temp, rpm = self.sensor_labels[name]
+                temp.set_text(temperature(f"{self.hwmon}/temp{i}_input"))
+                rpm.set_text(f"{read(f'{self.hwmon}/fan{i}_input') or '?'} RPM")
 
         if self.battery:
             capacity = read(f"{self.battery}/capacity")
             status = (read(f"{self.battery}/status") or "").lower()
             self.battery_label.set_markup(f"<big>Battery: {capacity}%</big>  {status}")
+            self.health_label.set_text(battery_health(self.battery) or "")
         return True
 
 
@@ -600,11 +939,154 @@ class App(Gtk.Application):
         window.present()
 
 
+# --- background service -----------------------------------------------------
+
+
+class Daemon:
+    """Applies profiles on charger changes and reports NitroSense key presses."""
+
+    def __init__(self):
+        self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.notification_id = 0
+        self.sent_ids = set()
+        self.last_notify_ms = 0
+        self.pending_apply = None
+        self.on_battery = self.read_on_battery()
+
+        self.system.signal_subscribe(
+            "org.freedesktop.UPower", "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/org/freedesktop/UPower", None, Gio.DBusSignalFlags.NONE, self.on_upower_changed,
+        )
+        self.session.signal_subscribe(
+            "org.freedesktop.Notifications", "org.freedesktop.Notifications", "ActionInvoked",
+            "/org/freedesktop/Notifications", None, Gio.DBusSignalFlags.NONE, self.on_action,
+        )
+        self.session.signal_subscribe(
+            "org.freedesktop.Notifications", "org.freedesktop.Notifications", "NotificationClosed",
+            "/org/freedesktop/Notifications", None, Gio.DBusSignalFlags.NONE, self.on_closed,
+        )
+        self.schedule_apply()
+        self.watch_mode_key()
+        log(f"daemon started, {'on battery' if self.on_battery else 'plugged in'}")
+
+    def read_on_battery(self):
+        try:
+            result = self.system.call_sync(
+                "org.freedesktop.UPower", "/org/freedesktop/UPower",
+                "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", ("org.freedesktop.UPower", "OnBattery")),
+                GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None,
+            )
+            return bool(result.unpack()[0])
+        except GLib.Error as err:
+            log(f"cannot read the power source from UPower: {err.message}")
+            return None
+
+    def on_upower_changed(self, _conn, _sender, _path, _iface, _signal, params):
+        _iface_name, changed, _invalidated = params.unpack()
+        if "OnBattery" in changed and changed["OnBattery"] != self.on_battery:
+            self.on_battery = changed["OnBattery"]
+            self.schedule_apply()
+
+    def schedule_apply(self):
+        # The driver restores its own saved mode on charger events; apply after it.
+        if self.pending_apply:
+            GLib.source_remove(self.pending_apply)
+        self.pending_apply = GLib.timeout_add(1500, self.apply_for_power_source)
+
+    def apply_for_power_source(self):
+        self.pending_apply = None
+        if self.on_battery is None:
+            return False
+        config = load_config()
+        name = config.get("on_battery" if self.on_battery else "on_ac")
+        profile = config["profiles"].get(name) if name else None
+        if profile:
+            problems = apply_profile(profile)
+            log(f"applied “{name}”" + (f", except: {'; '.join(problems)}" if problems else ""))
+        return False
+
+    def watch_mode_key(self):
+        # The driver handles the key itself (it cycles the power mode) and only
+        # leaves a line in the kernel log, so that log is the one signal we get.
+        # No --grep here: combined with --follow it prints nothing.
+        try:
+            proc = Gio.Subprocess.new(
+                ["journalctl", "--dmesg", "--follow", "--lines=0", "--output=cat"],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
+            )
+        except GLib.Error as err:
+            log(f"cannot follow the kernel log, key notifications are off: {err.message}")
+            return
+        self.journal = proc
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_journal_line)
+
+    def on_journal_line(self, stream, result):
+        line, _length = stream.read_line_finish_utf8(result)
+        if line is None:
+            log("the kernel log watcher stopped, key notifications are off")
+            return
+        if "pressed turbo button" in line and load_config().get("mode_key"):
+            GLib.timeout_add(300, self.notify_mode)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_journal_line)
+
+    def notify_mode(self):
+        mode = read(PLATFORM_PROFILE)
+        label = POWER_LABELS.get(mode, mode or "unknown")
+        # Update the popup while it is still on screen, so quick presses do not
+        # stack up. Once it may have timed out, open a new one: KDE does not
+        # report the timeout, and replacing a timed-out notification shows nothing.
+        now = GLib.get_monotonic_time() // 1000
+        if now - self.last_notify_ms > NOTIFY_TIMEOUT_MS - 500:
+            self.notification_id = 0
+        try:
+            result = self.session.call_sync(
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications", "Notify",
+                GLib.Variant("(susssasa{sv}i)", (
+                    "Nitro Panel", self.notification_id, "input-keyboard",
+                    f"Power mode: {label}", "",
+                    ["default", "Open Nitro Panel", "open", "Open Nitro Panel"],
+                    {"desktop-entry": GLib.Variant("s", APP_ID),
+                     "transient": GLib.Variant("b", True)},
+                    NOTIFY_TIMEOUT_MS,
+                )),
+                GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 5000, None,
+            )
+            self.notification_id = result.unpack()[0]
+            self.sent_ids.add(self.notification_id)
+            self.last_notify_ms = now
+        except GLib.Error as err:
+            log(f"cannot show a notification: {err.message}")
+        return False
+
+    def on_closed(self, _conn, _sender, _path, _iface, _signal, params):
+        notification_id, _reason = params.unpack()
+        if notification_id == self.notification_id:
+            self.notification_id = 0
+
+    def on_action(self, _conn, _sender, _path, _iface, _signal, params):
+        notification_id, action = params.unpack()
+        if notification_id in self.sent_ids and action in ("default", "open"):
+            try:
+                Gio.Subprocess.new([sys.executable, os.path.realpath(__file__)],
+                                   Gio.SubprocessFlags.NONE)
+            except GLib.Error as err:
+                log(f"cannot open the panel: {err.message}")
+
+
 def main():
-    if "--version" in sys.argv[1:]:
+    args = sys.argv[1:]
+    if "--version" in args:
         print(f"nitro-panel {__version__}")
         return 0
-    return App().run(sys.argv)
+    if "--daemon" in args:
+        Daemon()
+        GLib.MainLoop().run()
+        return 0
+    return App().run(sys.argv[:1])
 
 
 if __name__ == "__main__":

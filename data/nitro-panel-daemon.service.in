@@ -1,0 +1,11 @@
+[Unit]
+Description=Nitro Panel automation: charger profiles and NitroSense key notifications
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@BINDIR@/nitro-panel --daemon
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

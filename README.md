@@ -6,16 +6,22 @@ Nitro Panel is only the front end. The hardware access comes from the [Linuwu-Se
 
 > Not affiliated with or endorsed by Acer.
 
-| Keyboard | Power | Battery |
-|---|---|---|
-| ![Keyboard tab](docs/screenshots/keyboard.png) | ![Power tab](docs/screenshots/power.png) | ![Battery tab](docs/screenshots/battery.png) |
+| Keyboard | Power |
+|---|---|
+| ![Keyboard tab](docs/screenshots/keyboard.png) | ![Power tab](docs/screenshots/power.png) |
+| **Battery** | **Profiles** |
+| ![Battery tab](docs/screenshots/battery.png) | ![Profiles tab](docs/screenshots/profiles.png) |
 
 ## Features
 
 - **Keyboard** (four-zone RGB keyboards): a color per zone, or one of seven effects (breathing, neon, wave, shifting, zoom, meteor, twinkling) with speed and direction. Brightness slider and quick colors.
 - **Power mode**: Eco, Quiet, Balanced, Performance and Turbo. Modes your laptop does not offer right now (Turbo on battery, for example) are greyed out.
-- **Fans**: auto, max, or a custom CPU/GPU percentage, with live fan RPM.
-- **Battery**: stop charging at 80%, and USB charging while the laptop is off.
+- **Fans**: auto, max, or a custom CPU/GPU percentage.
+- **Sensors**: CPU and GPU temperature and fan RPM. They come from the embedded controller, so reading them never wakes a sleeping NVIDIA GPU.
+- **Battery**: charge level and health (current capacity against the original), stop charging at 80%, and USB charging while the laptop is off.
+- **Profiles**: save the power mode, fan setting and keyboard lighting under a name and apply them with one click. Gaming, Quiet and Battery saver are there to start with.
+- **Automatic**: apply a profile when you unplug or plug in the charger.
+- **NitroSense key**: show the new power mode when you press the key, with a button that opens the panel.
 
 The panel only shows the controls your model exposes. Changes apply immediately; there is no Apply button.
 
@@ -65,6 +71,13 @@ Nitro Panel runs as your normal user and never as root.
 - `make install` adds a tmpfiles rule (`data/nitro-panel.tmpfiles.conf`) that does the same for `/sys/firmware/acpi/platform_profile`, so the group can change the power mode too.
 - Without that rule, changing the power mode asks for your password through polkit.
 
+## Background service
+
+The **Automatic** settings and the NitroSense key notification need `nitro-panel --daemon`, a small service in your user session (`nitro-panel-daemon.service`). The panel switches it on when you turn one of these settings on, and off again when none is in use. Profiles are saved in `~/.config/nitro-panel/config.json`.
+
+- It applies the profile after Linuwu-Sense has finished its own charger handling. The driver already remembers a power mode for battery and for plugged in; the profile then sets the mode, fans and keyboard you chose.
+- The NitroSense key gives no key code to the desktop. Linuwu-Sense handles it in the kernel, switches to the next power mode and writes a line to the kernel log. The service watches for that line, so your user must be able to read the kernel log (`journalctl -k` without sudo). On Arch, members of `wheel` can; others can join `systemd-journal`.
+
 ## Good to know
 
 - Other tools can change the power mode as well: power-profiles-daemon, tuned, or the power widget in your desktop. The panel always shows the mode that is currently active.
@@ -79,6 +92,8 @@ Nitro Panel runs as your normal user and never as root.
 | "No write access yet" | Run `id -nG` and look for `linuwu_sense`. If it is missing, add yourself and log in again. |
 | No Keyboard tab | Your model does not expose a four-zone keyboard through Linuwu-Sense. |
 | Power mode asks for a password every time | The tmpfiles rule is not installed. Run `sudo make install` again. |
+| No notification when pressing the NitroSense key | `systemctl --user status nitro-panel-daemon` should be active, and `journalctl -k -n 5` must work without sudo. |
+| A profile is not applied when the charger changes | `journalctl --user -u nitro-panel-daemon` shows what the service did. |
 
 ## Credits
 
