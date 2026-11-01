@@ -55,7 +55,7 @@ These options do not load GTK, so they return quickly and work well in scripts a
 
 | Model | Result |
 |---|---|
-| Acer Nitro AN16-41 (Ryzen 7040, RTX 4070) | Everything works |
+| Acer Nitro AN16-41 (Ryzen 9 7940HS, RTX 4070) | Everything works |
 
 Other models supported by Linuwu-Sense should work too. If you try one, please open an issue with your model name and what worked.
 
