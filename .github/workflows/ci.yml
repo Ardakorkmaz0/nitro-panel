@@ -16,7 +16,7 @@ jobs:
           pacman -Syu --noconfirm --needed git make python python-gobject gtk3 python-pytest \
             xorg-server-xvfb dbus desktop-file-utils qt6-declarative kirigami libplasma plasma5support
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Tests
         run: dbus-run-session -- xvfb-run -a pytest -v
@@ -35,7 +35,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
