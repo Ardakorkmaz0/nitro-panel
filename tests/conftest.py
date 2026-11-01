@@ -24,6 +24,7 @@ def fake_sys(tmp_path, monkeypatch):
         sense / "fan_speed": "0,0",
         sense / "battery_limiter": "0",
         sense / "usb_charging": "0",
+        sense / "backlight_timeout": "1",
         acpi / "platform_profile": "balanced",
         acpi / "platform_profile_choices": "low-power quiet balanced balanced-performance performance",
         hwmon / "name": "acer",
@@ -56,4 +57,5 @@ def fake_sys(tmp_path, monkeypatch):
         four_zone=kb / "four_zone_mode", per_zone=kb / "per_zone_mode",
         profile=acpi / "platform_profile", choices=acpi / "platform_profile_choices",
         fan=sense / "fan_speed", limiter=sense / "battery_limiter",
+        timeout=sense / "backlight_timeout",
     )

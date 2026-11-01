@@ -16,7 +16,7 @@ Nitro Panel is only the front end. The hardware access comes from the [Linuwu-Se
 
 ## Features
 
-- **Keyboard** (four-zone RGB keyboards): a color per zone, or one of seven effects (breathing, neon, wave, shifting, zoom, meteor, twinkling) with speed and direction. Brightness in NitroSense's steps (off, 25, 50, 75, 100%) or in steps of 1, and quick colors.
+- **Keyboard** (four-zone RGB keyboards): a color per zone, or one of seven effects (breathing, neon, wave, shifting, zoom, meteor, twinkling) with speed and direction. Brightness in NitroSense's steps (off, 25, 50, 75, 100%) or in steps of 1, and quick colors. The light can turn off after 30 seconds without typing, or stay on.
 - **Power mode**: Eco, Quiet, Balanced, Performance and Turbo. Modes your laptop does not offer right now (Turbo on battery, for example) are greyed out.
 - **Fans**: auto, max, or a custom CPU/GPU percentage.
 - **Sensors**: CPU and GPU temperature and fan RPM. They come from the embedded controller, so reading them never wakes a sleeping NVIDIA GPU.
@@ -46,6 +46,7 @@ nitro-panel --profile NAME          apply a saved profile
 nitro-panel --kb-brightness 0-100   keyboard light brightness, colors stay the same
 nitro-panel --battery-limit on|off  stop charging at 80%
 nitro-panel --kb-fine on|off        brightness in steps of 1 instead of off/25/50/75/100%
+nitro-panel --kb-timeout on|off     turn the keyboard light off after 30 s without typing
 ```
 
 These options do not load GTK, so they return quickly and work well in scripts and keyboard shortcuts.
@@ -105,6 +106,8 @@ The **Automatic** settings and the NitroSense key notification need `nitro-panel
 - The NitroSense key gives no key code to the desktop. Linuwu-Sense handles it in the kernel, switches to the next power mode and writes a line to the kernel log. The service watches for that line, so your user must be able to read the kernel log (`journalctl -k` without sudo). On Arch, members of `wheel` can; others can join `systemd-journal`.
 
 ## Good to know
+
+- **Keyboard light timeout on Nitro models:** with Linuwu-Sense as it is today, switching the timeout off makes the light go out 2-3 seconds after the last key press instead of keeping it on. The driver sends 0x88402 there, which on Nitro means "zero seconds"; on an AN16-41, 0x8402 (bit 19 cleared) is what really keeps the light on. The fix is proposed to Linuwu-Sense in [pull request #157](https://github.com/0x7375646F/Linuwu-Sense/pull/157). Until it is merged, leave the timeout on, or build the driver from [that branch](https://github.com/Ardakorkmaz0/Linuwu-Sense/tree/nitro-backlight-timeout).
 
 - Other tools can change the power mode as well: power-profiles-daemon, tuned, or the power widget in your desktop. The panel always shows the mode that is currently active.
 - Linuwu-Sense saves your keyboard settings and restores them at boot.

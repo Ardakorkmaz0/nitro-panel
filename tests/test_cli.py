@@ -27,6 +27,7 @@ def test_status_json(fake_sys, capsys):
     assert all(m["available"] for m in status["modes"])
     assert status["keyboard_brightness"] == 100
     assert status["keyboard_fine"] is False
+    assert status["keyboard_timeout"] is True
     assert status["battery_limit"] is False
     assert status["sensors"] == {"cpu_temp": 51, "gpu_temp": 47, "cpu_fan": 2100, "gpu_fan": 1900}
     assert status["profiles"] == ["Battery saver", "Gaming", "Quiet"]
@@ -83,6 +84,29 @@ def test_kb_fine_is_saved(fake_sys, capsys):
     assert run(capsys, "--kb-fine", "on")[0] == 0
     assert np.load_config()["kb_fine"] is True
     assert json.loads(run(capsys, "--status")[1])["keyboard_fine"] is True
+
+
+def test_kb_timeout(fake_sys, capsys):
+    assert run(capsys, "--kb-timeout", "off")[0] == 0
+    assert fake_sys.read(fake_sys.timeout) == "0"
+    assert json.loads(run(capsys, "--status")[1])["keyboard_timeout"] is False
+    assert run(capsys, "--kb-timeout", "on")[0] == 0
+    assert fake_sys.read(fake_sys.timeout) == "1"
+    assert run(capsys, "--kb-timeout", "sometimes")[0] == 1
+
+
+def test_kb_timeout_hidden_when_root_only(fake_sys, capsys, monkeypatch):
+    """Stock Linuwu-Sense leaves it root-only on Nitro: the widget must not offer it."""
+    # Faked rather than chmod: CI runs the tests as root, which can write anything
+    monkeypatch.setattr(np, "writable", lambda path: path != str(fake_sys.timeout))
+    assert json.loads(run(capsys, "--status")[1])["keyboard_timeout"] is None
+
+
+def test_kb_timeout_missing(fake_sys, capsys):
+    fake_sys.timeout.unlink()
+    code, _, err = run(capsys, "--kb-timeout", "off")
+    assert code == 1
+    assert "no keyboard light timeout" in err
 
 
 def test_missing_value(fake_sys, capsys):

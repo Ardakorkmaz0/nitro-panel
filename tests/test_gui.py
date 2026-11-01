@@ -43,6 +43,13 @@ def test_state_is_loaded_from_the_driver(window):
     assert "71%" in window.health_label.get_text()
 
 
+def test_idle_timeout_switch(window, fake_sys):
+    assert window.backlight_timeout is not None
+    assert window.backlight_timeout.get_active()
+    window.backlight_timeout.set_active(False)
+    assert (str(fake_sys.timeout), "0") in window.writes
+
+
 def test_brightness_snaps_to_steps_unless_fine(window):
     window.brightness.emit("change-value", Gtk.ScrollType.JUMP, 62)
     assert window.brightness.get_value() == 50

@@ -3,6 +3,12 @@
 Each release on GitHub is published from its entry here. To release, raise
 `__version__` in `nitro_panel.py`, add an entry for it below and push to `main`.
 
+## 0.4.0 - 2026-11-01
+
+- Keyboard light timeout: turn the light off after 30 seconds without typing, or keep it on. A switch in the panel's Keyboard tab and in the Plasma widget, and `--kb-timeout on|off` on the command line.
+- `make install` makes the timeout writable for the `linuwu_sense` group, like the power mode. Linuwu-Sense leaves it root-only.
+- On Nitro models, "keep it on" needs a Linuwu-Sense fix, proposed in [Linuwu-Sense#157](https://github.com/0x7375646F/Linuwu-Sense/pull/157): the stock driver makes the light go out after 2-3 seconds instead. See the README.
+
 ## 0.3.0 - 2026-11-01
 
 - Plasma 6 system tray widget, laid out like Plasma's Power and Battery popup: a five-step power mode slider, profiles, keyboard light, the 80% charge limit and sensors. The tray icon shows the current power mode.

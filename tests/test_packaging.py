@@ -37,6 +37,14 @@ def test_make_install(tmp_path):
     assert "ExecStart=/usr/bin/nitro-panel --daemon" in unit
 
 
+def test_tmpfiles_rule_has_no_globs():
+    """tmpfiles refuses to glob through the acer-wmi symlink and skips the line silently."""
+    for line in (ROOT / "data" / "nitro-panel.tmpfiles.conf").read_text().splitlines():
+        if line and not line.startswith("#"):
+            path = line.split()[1]
+            assert not any(c in path for c in "*?["), f"glob in tmpfiles rule: {path}"
+
+
 def test_changelog_has_the_current_version():
     """A release is published from this entry, so it has to exist."""
     result = subprocess.run([sys.executable, str(ROOT / "scripts" / "release_notes.py"), np.__version__],

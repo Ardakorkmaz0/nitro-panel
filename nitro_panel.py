@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 APP_ID = "io.github.ardakorkmaz0.NitroPanel"
 DAEMON_UNIT = "nitro-panel-daemon.service"
@@ -255,12 +255,13 @@ Without an option, opens the panel window.
   --kb-brightness 0-100   set the keyboard light brightness, keeping its colors
   --battery-limit on|off  stop charging at 80%
   --kb-fine on|off        brightness in steps of 1 instead of off/25/50/75/100%
+  --kb-timeout on|off     turn the keyboard light off after 30 s without typing
   --daemon               run the background service
   --version               print the version
 """
 
 CLI_OPTIONS = {"--status", "--mode", "--profile", "--kb-brightness", "--battery-limit",
-               "--kb-fine", "--version", "--help", "-h"}
+               "--kb-fine", "--kb-timeout", "--version", "--help", "-h"}
 
 MODE_ALIASES = {label.lower(): mode for mode, label in POWER_MODES}
 
@@ -289,6 +290,8 @@ def status():
     keyboard = keyboard_state()
     limiter = read(sense_path("battery_limiter"))
     config = load_config()
+    timeout_path = sense_path("backlight_timeout")
+    timeout = read(timeout_path) if writable(timeout_path) else None
 
     def sensor(name, scale=1):
         value = read(f"{hwmon}/{name}") if hwmon else None
@@ -302,6 +305,8 @@ def status():
         "modes": [{"id": m, "label": label, "available": m in choices} for m, label in POWER_MODES],
         "keyboard_brightness": keyboard["brightness"] if keyboard else None,
         "keyboard_fine": bool(config.get("kb_fine")),
+        # None when the timeout cannot be changed (missing, root-only or unknown)
+        "keyboard_timeout": {"1": True, "0": False}.get(timeout),
         "battery_limit": None if limiter is None else limiter == "1",
         "sensors": {
             "cpu_temp": sensor("temp1_input", 1000),
@@ -385,6 +390,13 @@ def cli(args):
             config = load_config()
             config["kb_fine"] = value == "on"
             save_config(config)
+        elif option == "--kb-timeout":
+            path = sense_path("backlight_timeout")
+            if path is None:
+                raise CliError("this laptop has no keyboard light timeout")
+            if value not in ("on", "off"):
+                raise CliError("use --kb-timeout on or --kb-timeout off")
+            write(path, "1" if value == "on" else "0")
     except CliError as err:
         print(f"nitro-panel: {err}", file=sys.stderr)
         return 1
@@ -653,7 +665,7 @@ class NitroPanel(Gtk.ApplicationWindow):
             box.pack_start(section("Other"), False, False, 0)
             box.pack_start(
                 row("Turn off when idle", self.backlight_timeout,
-                    "Switch the keyboard light off after a short idle period"),
+                    "After 30 seconds without typing. When off, the light stays on."),
                 False, False, 0,
             )
         return box

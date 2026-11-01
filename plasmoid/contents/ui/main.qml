@@ -283,6 +283,14 @@ PlasmoidItem {
                     onPressedChanged: if (!pressed) commit()
                     onMoved: if (!pressed) commit()
                 }
+
+                PlasmaComponents3.Switch {
+                    Layout.fillWidth: true
+                    visible: root.info !== null && root.info.keyboard_timeout !== null
+                    text: "Turn off after 30 s without typing"
+                    checked: root.info !== null && root.info.keyboard_timeout === true
+                    onToggled: root.run("--kb-timeout " + (checked ? "on" : "off"))
+                }
             }
 
             Section {
