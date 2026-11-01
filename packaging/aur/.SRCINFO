@@ -11,6 +11,7 @@ pkgbase = nitro-panel-git
 	depends = python-gobject
 	depends = gtk3
 	optdepends = linuwu-sense-dkms-git: the kernel module this panel controls
+	optdepends = plasma-workspace: system tray widget
 	provides = nitro-panel
 	conflicts = nitro-panel
 	source = git+https://github.com/Ardakorkmaz0/nitro-panel.git

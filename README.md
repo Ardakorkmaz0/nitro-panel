@@ -14,7 +14,7 @@ Nitro Panel is only the front end. The hardware access comes from the [Linuwu-Se
 
 ## Features
 
-- **Keyboard** (four-zone RGB keyboards): a color per zone, or one of seven effects (breathing, neon, wave, shifting, zoom, meteor, twinkling) with speed and direction. Brightness slider and quick colors.
+- **Keyboard** (four-zone RGB keyboards): a color per zone, or one of seven effects (breathing, neon, wave, shifting, zoom, meteor, twinkling) with speed and direction. Brightness in NitroSense's steps (off, 25, 50, 75, 100%) or in steps of 1, and quick colors.
 - **Power mode**: Eco, Quiet, Balanced, Performance and Turbo. Modes your laptop does not offer right now (Turbo on battery, for example) are greyed out.
 - **Fans**: auto, max, or a custom CPU/GPU percentage.
 - **Sensors**: CPU and GPU temperature and fan RPM. They come from the embedded controller, so reading them never wakes a sleeping NVIDIA GPU.
@@ -22,8 +22,31 @@ Nitro Panel is only the front end. The hardware access comes from the [Linuwu-Se
 - **Profiles**: save the power mode, fan setting and keyboard lighting under a name and apply them with one click. Gaming, Quiet and Battery saver are there to start with.
 - **Automatic**: apply a profile when you unplug or plug in the charger.
 - **NitroSense key**: show the new power mode when you press the key, with a button that opens the panel.
+- **Plasma widget**: power mode, profiles, keyboard light, the 80% charge limit and sensors in the KDE system tray. Its icon shows the current power mode.
 
 The panel only shows the controls your model exposes. Changes apply immediately; there is no Apply button.
+
+## Plasma widget
+
+![Plasma widget](docs/screenshots/widget.png)
+
+On KDE Plasma 6, `make install` also installs a system tray widget, laid out like Plasma's own Power and Battery popup. It shows up in the tray by itself after you log out and back in. Restarting only plasmashell also works, but on Plasma 6.8 it can hang while quitting and leave the screen black until it is killed (`systemctl --user kill -s KILL plasma-plasmashell`), so logging out is the safer way. After updating Nitro Panel, log out and back in as well, so Plasma loads the new widget. To hide it, open the tray's settings and set **Nitro Panel** to hidden or disabled under Entries.
+
+The widget does nothing on its own: it reads `nitro-panel --status` and runs the command line options below.
+
+## Command line
+
+```text
+nitro-panel                         open the panel window
+nitro-panel --status                print the current state as JSON
+nitro-panel --mode MODE             eco, quiet, balanced, performance or turbo
+nitro-panel --profile NAME          apply a saved profile
+nitro-panel --kb-brightness 0-100   keyboard light brightness, colors stay the same
+nitro-panel --battery-limit on|off  stop charging at 80%
+nitro-panel --kb-fine on|off        brightness in steps of 1 instead of off/25/50/75/100%
+```
+
+These options do not load GTK, so they return quickly and work well in scripts and keyboard shortcuts.
 
 ## Tested models
 
@@ -38,6 +61,7 @@ Other models supported by Linuwu-Sense should work too. If you try one, please o
 - The Linuwu-Sense kernel module, loaded (`lsmod | grep linuwu_sense`). On Arch it is in the AUR as `linuwu-sense-dkms-git`, or build it from [source](https://github.com/0x7375646F/Linuwu-Sense).
 - Python 3, PyGObject and GTK 3. On Arch: `sudo pacman -S python-gobject gtk3`.
 - Your user in the `linuwu_sense` group, which Linuwu-Sense creates.
+- For the tray widget: KDE Plasma 6.
 
 ## Install
 

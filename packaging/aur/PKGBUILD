@@ -8,7 +8,8 @@ url="https://github.com/Ardakorkmaz0/nitro-panel"
 license=('GPL-3.0-or-later')
 depends=('python' 'python-gobject' 'gtk3')
 makedepends=('git')
-optdepends=('linuwu-sense-dkms-git: the kernel module this panel controls')
+optdepends=('linuwu-sense-dkms-git: the kernel module this panel controls'
+            'plasma-workspace: system tray widget')
 provides=('nitro-panel')
 conflicts=('nitro-panel')
 install=nitro-panel.install

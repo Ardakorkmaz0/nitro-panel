@@ -10,20 +10,18 @@ panel falls back to pkexec.
 `nitro-panel --daemon` is the optional background service. It applies a
 profile when the charger is plugged in or out, and shows the new power mode
 when the NitroSense key is pressed.
+
+The other command line options (see --help) are what the Plasma widget
+calls. They run without loading GTK, so they stay quick.
 """
 
 import glob
 import json
 import os
+import subprocess
 import sys
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
-
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 APP_ID = "io.github.ardakorkmaz0.NitroPanel"
 DAEMON_UNIT = "nitro-panel-daemon.service"
@@ -34,7 +32,10 @@ FOUR_ZONE = f"{BASE}/four_zoned_kb/four_zone_mode"
 PER_ZONE = f"{BASE}/four_zoned_kb/per_zone_mode"
 PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
 PLATFORM_CHOICES = "/sys/firmware/acpi/platform_profile_choices"
-CONFIG_FILE = os.path.join(GLib.get_user_config_dir(), "nitro-panel", "config.json")
+CONFIG_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "nitro-panel", "config.json",
+)
 
 # (driver mode, label, uses color, uses speed, uses direction)
 # Mode 0 (static) is left out: "Zone colors" covers it.
@@ -115,16 +116,6 @@ def writable(path):
     return path is not None and os.access(path, os.W_OK)
 
 
-def rgba_to_hex(rgba):
-    return "".join(f"{round(c * 255):02x}" for c in (rgba.red, rgba.green, rgba.blue))
-
-
-def hex_to_rgba(value):
-    rgba = Gdk.RGBA()
-    rgba.parse(f"#{value}")
-    return rgba
-
-
 def sense_path(name):
     """Path of a NitroSense/PredatorSense setting, or None if this model lacks it."""
     for folder in ("nitro_sense", "predator_sense"):
@@ -174,6 +165,7 @@ def load_config():
         "on_battery": None,
         "on_ac": None,
         "mode_key": False,
+        "kb_fine": False,
     }
     try:
         with open(CONFIG_FILE) as f:
@@ -248,6 +240,184 @@ def apply_profile(profile, power_fallback=None):
         except OSError as err:
             problems.append(f"{name}: {err.strerror}")
     return problems
+
+
+# --- command line -----------------------------------------------------------
+
+CLI_USAGE = """\
+usage: nitro-panel [OPTION]
+
+Without an option, opens the panel window.
+
+  --status                print the current state as JSON
+  --mode MODE             set the power mode: eco, quiet, balanced, performance, turbo
+  --profile NAME          apply a saved profile
+  --kb-brightness 0-100   set the keyboard light brightness, keeping its colors
+  --battery-limit on|off  stop charging at 80%
+  --kb-fine on|off        brightness in steps of 1 instead of off/25/50/75/100%
+  --daemon               run the background service
+  --version               print the version
+"""
+
+CLI_OPTIONS = {"--status", "--mode", "--profile", "--kb-brightness", "--battery-limit",
+               "--kb-fine", "--version", "--help", "-h"}
+
+MODE_ALIASES = {label.lower(): mode for mode, label in POWER_MODES}
+
+
+class CliError(Exception):
+    pass
+
+
+def keyboard_state():
+    """The current keyboard lighting as a profile part, or None without one."""
+    try:
+        mode, speed, brightness, direction, r, g, b = (int(v) for v in read(FOUR_ZONE).split(","))
+        if mode != 0:
+            return {"mode": mode, "speed": max(speed, 1),
+                    "direction": direction if direction in (1, 2) else 2,
+                    "color": f"{r:02x}{g:02x}{b:02x}", "brightness": brightness}
+        *zones, brightness = read(PER_ZONE).split(",")
+        return {"mode": "zones", "zones": zones, "brightness": int(brightness)}
+    except (AttributeError, ValueError):
+        return None
+
+
+def status():
+    hwmon = find_hwmon("acer")
+    choices = (read(PLATFORM_CHOICES) or "").split()
+    keyboard = keyboard_state()
+    limiter = read(sense_path("battery_limiter"))
+    config = load_config()
+
+    def sensor(name, scale=1):
+        value = read(f"{hwmon}/{name}") if hwmon else None
+        return int(value) // scale if value and value.lstrip("-").isdigit() else None
+
+    return {
+        "version": __version__,
+        "available": os.path.exists(BASE),
+        "writable": writable(PER_ZONE) or writable(sense_path("fan_speed")),
+        "mode": read(PLATFORM_PROFILE),
+        "modes": [{"id": m, "label": label, "available": m in choices} for m, label in POWER_MODES],
+        "keyboard_brightness": keyboard["brightness"] if keyboard else None,
+        "keyboard_fine": bool(config.get("kb_fine")),
+        "battery_limit": None if limiter is None else limiter == "1",
+        "sensors": {
+            "cpu_temp": sensor("temp1_input", 1000),
+            "gpu_temp": sensor("temp2_input", 1000),
+            "cpu_fan": sensor("fan1_input"),
+            "gpu_fan": sensor("fan2_input"),
+        },
+        "profiles": sorted(config["profiles"], key=str.lower),
+    }
+
+
+def pkexec_power(mode):
+    """Write the power mode through polkit. Returns an error message or None."""
+    tee = next((p for p in ("/usr/bin/tee", "/bin/tee") if os.path.exists(p)), "tee")
+    result = subprocess.run(["pkexec", tee, PLATFORM_PROFILE], input=mode, text=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        return f"could not change the power mode: {result.stderr.strip() or 'cancelled'}"
+    return None
+
+
+def set_power_mode(mode):
+    mode = MODE_ALIASES.get(mode.lower(), mode)
+    if mode not in (read(PLATFORM_CHOICES) or "").split():
+        raise CliError(f"{POWER_LABELS.get(mode, mode)} mode is not available right now")
+    try:
+        write(PLATFORM_PROFILE, mode)
+    except PermissionError:
+        error = pkexec_power(mode)
+        if error:
+            raise CliError(error) from None
+
+
+def cli(args):
+    """Handle the quick command line options. Returns the exit code."""
+    option = args[0]
+    value = args[1] if len(args) > 1 else None
+    try:
+        if option in ("--help", "-h"):
+            print(CLI_USAGE, end="")
+        elif option == "--version":
+            print(f"nitro-panel {__version__}")
+        elif option == "--status":
+            print(json.dumps(status()))
+        elif value is None:
+            raise CliError(f"{option} needs a value, see --help")
+        elif option == "--mode":
+            set_power_mode(value)
+        elif option == "--profile":
+            profiles = load_config()["profiles"]
+            if value not in profiles:
+                raise CliError(f"there is no profile called {value!r}")
+            extra = []
+
+            def fallback(mode):
+                error = pkexec_power(mode)
+                if error:
+                    extra.append(error)
+
+            problems = apply_profile(profiles[value], fallback) + extra
+            if problems:
+                raise CliError(f"applied {value!r}, except: {'; '.join(problems)}")
+        elif option == "--kb-brightness":
+            if not value.isdigit() or not 0 <= int(value) <= 100:
+                raise CliError("the brightness must be a number from 0 to 100")
+            keyboard = keyboard_state()
+            if keyboard is None:
+                raise CliError("no keyboard lighting found")
+            keyboard["brightness"] = int(value)
+            write(*keyboard_value(keyboard))
+        elif option == "--battery-limit":
+            path = sense_path("battery_limiter")
+            if path is None:
+                raise CliError("this laptop has no battery charge limit")
+            if value not in ("on", "off"):
+                raise CliError("use --battery-limit on or --battery-limit off")
+            write(path, "1" if value == "on" else "0")
+        elif option == "--kb-fine":
+            if value not in ("on", "off"):
+                raise CliError("use --kb-fine on or --kb-fine off")
+            config = load_config()
+            config["kb_fine"] = value == "on"
+            save_config(config)
+    except CliError as err:
+        print(f"nitro-panel: {err}", file=sys.stderr)
+        return 1
+    except PermissionError:
+        print("nitro-panel: permission denied; are you in the linuwu_sense group?", file=sys.stderr)
+        return 1
+    except OSError as err:
+        print(f"nitro-panel: {err.strerror}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__" and sys.argv[1:2] and sys.argv[1] in CLI_OPTIONS:
+    sys.exit(cli(sys.argv[1:]))
+
+
+# Everything below needs GTK or GLib: the panel window and the background service.
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+
+def rgba_to_hex(rgba):
+    return "".join(f"{round(c * 255):02x}" for c in (rgba.red, rgba.green, rgba.blue))
+
+
+def hex_to_rgba(value):
+    rgba = Gdk.RGBA()
+    rgba.parse(f"#{value}")
+    return rgba
 
 
 # --- window helpers ---------------------------------------------------------
@@ -451,11 +621,22 @@ class NitroPanel(Gtk.ApplicationWindow):
         self.effect_box.pack_start(self.direction_row, False, False, 0)
         box.pack_start(self.effect_box, False, False, 0)
 
-        self.brightness = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
+        self.brightness = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self.brightness.set_size_request(220, -1)
         self.brightness.set_value(100)
+        self.brightness.connect("change-value", self.on_brightness_change)
         self.brightness.connect("value-changed", lambda *_: self.debounce("kb", self.apply_keyboard))
         box.pack_start(row("Brightness", self.brightness, "0 turns the light off"), False, False, 0)
+
+        steps, self.kb_step_buttons = linked_radios(
+            [("steps", "Steps"), ("fine", "Fine")], self.on_kb_steps,
+        )
+        self._updating = True
+        self.kb_step_buttons["fine" if self.config.get("kb_fine") else "steps"].set_active(True)
+        self._updating = False
+        box.pack_start(row("Brightness steps", steps, "Steps: off, 25, 50, 75 and 100%, like NitroSense"),
+                       False, False, 0)
+        self.update_brightness_steps()
 
         presets = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, homogeneous=True)
         for name, color in PRESETS:
@@ -476,6 +657,29 @@ class NitroPanel(Gtk.ApplicationWindow):
                 False, False, 0,
             )
         return box
+
+    def on_kb_steps(self, button, key):
+        if self._updating or not button.get_active():
+            return
+        self.config["kb_fine"] = key == "fine"
+        self.save()
+        self.update_brightness_steps()
+
+    def update_brightness_steps(self):
+        self.brightness.clear_marks()
+        if self.config.get("kb_fine"):
+            self.brightness.set_increments(1, 10)
+        else:
+            self.brightness.set_increments(25, 25)
+            for value in (0, 25, 50, 75, 100):
+                self.brightness.add_mark(value, Gtk.PositionType.BOTTOM, None)
+
+    def on_brightness_change(self, scale, _scroll, value):
+        """In Steps mode, snap whatever the user does to the nearest 25%."""
+        if self.config.get("kb_fine"):
+            return False
+        scale.set_value(min(100, max(0, round(value / 25) * 25)))
+        return True
 
     def on_kb_mode_changed(self, _combo):
         self.update_kb_visibility()
@@ -910,6 +1114,12 @@ class NitroPanel(Gtk.ApplicationWindow):
         active = read(PLATFORM_PROFILE)
         if active in self.power_buttons:
             self.power_buttons[active].set_active(True)
+        # The Plasma widget may have switched Steps/Fine in the shared config
+        fine = bool(load_config().get("kb_fine"))
+        if self.has_kb and fine != bool(self.config.get("kb_fine")):
+            self.config["kb_fine"] = fine
+            self.kb_step_buttons["fine" if fine else "steps"].set_active(True)
+            self.update_brightness_steps()
         self._updating = False
 
         # The embedded controller reports these, so reading them never
@@ -1079,9 +1289,6 @@ class Daemon:
 
 def main():
     args = sys.argv[1:]
-    if "--version" in args:
-        print(f"nitro-panel {__version__}")
-        return 0
     if "--daemon" in args:
         Daemon()
         GLib.MainLoop().run()

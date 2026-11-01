@@ -1,0 +1,22 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "ArdaKorkmaz0"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Power mode, profiles, keyboard light and sensors for Acer Nitro and Predator laptops",
+        "EnabledByDefault": true,
+        "Icon": "battery-profile-performance-symbolic",
+        "Id": "io.github.ardakorkmaz0.nitropanel",
+        "License": "GPL-3.0-or-later",
+        "Name": "Nitro Panel",
+        "Version": "0.3.0",
+        "Website": "https://github.com/Ardakorkmaz0/nitro-panel"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}
