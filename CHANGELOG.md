@@ -7,7 +7,7 @@ Each release on GitHub is published from its entry here. To release, raise
 
 - Keyboard light timeout: turn the light off after 30 seconds without typing, or keep it on. A switch in the panel's Keyboard tab and in the Plasma widget, and `--kb-timeout on|off` on the command line.
 - `make install` makes the timeout writable for the `linuwu_sense` group, like the power mode. Linuwu-Sense leaves it root-only.
-- On Nitro models, "keep it on" needs a Linuwu-Sense fix, proposed in [Linuwu-Sense#157](https://github.com/0x7375646F/Linuwu-Sense/pull/157): the stock driver makes the light go out after 2-3 seconds instead. See the README.
+- On Nitro models, "keep it on" needs a Linuwu-Sense fix: the stock driver makes the light go out after 2-3 seconds instead. See the README.
 
 ## 0.3.0 - 2026-11-01
 

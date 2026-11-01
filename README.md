@@ -107,7 +107,7 @@ The **Automatic** settings and the NitroSense key notification need `nitro-panel
 
 ## Good to know
 
-- **Keyboard light timeout on Nitro models:** with Linuwu-Sense as it is today, switching the timeout off makes the light go out 2-3 seconds after the last key press instead of keeping it on. The driver sends 0x88402 there, which on Nitro means "zero seconds"; on an AN16-41, 0x8402 (bit 19 cleared) is what really keeps the light on. The fix is proposed to Linuwu-Sense in [pull request #157](https://github.com/0x7375646F/Linuwu-Sense/pull/157). Until it is merged, leave the timeout on, or build the driver from [that branch](https://github.com/Ardakorkmaz0/Linuwu-Sense/tree/nitro-backlight-timeout).
+- **Keyboard light timeout on Nitro models:** with Linuwu-Sense as it is today, switching the timeout off makes the light go out 2-3 seconds after the last key press instead of keeping it on. The driver sends 0x88402 there, which on Nitro means "zero seconds"; on an AN16-41, 0x8402 (bit 19 cleared) is what really keeps the light on. A fix is in [this Linuwu-Sense branch](https://github.com/Ardakorkmaz0/Linuwu-Sense/tree/nitro-backlight-timeout). Unless your Linuwu-Sense has it, leave the timeout on.
 
 - Other tools can change the power mode as well: power-profiles-daemon, tuned, or the power widget in your desktop. The panel always shows the mode that is currently active.
 - Linuwu-Sense saves your keyboard settings and restores them at boot.
