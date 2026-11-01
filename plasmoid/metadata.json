@@ -12,7 +12,6 @@
         "Id": "io.github.ardakorkmaz0.nitropanel",
         "License": "GPL-3.0-or-later",
         "Name": "Nitro Panel",
-        "Version": "0.3.0",
         "Website": "https://github.com/Ardakorkmaz0/nitro-panel"
     },
     "KPackageStructure": "Plasma/Applet",

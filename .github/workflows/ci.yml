@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Arch, like the distributions this is mostly used on
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git make python python-gobject gtk3 python-pytest \
+            xorg-server-xvfb dbus desktop-file-utils qt6-declarative kirigami libplasma plasma5support
+
+      - uses: actions/checkout@v4
+
+      - name: Tests
+        run: dbus-run-session -- xvfb-run -a pytest -v
+
+      - name: Lint the Plasma widget
+        run: /usr/lib/qt6/bin/qmllint -I /usr/lib/qt6/qml plasmoid/contents/ui/main.qml
+
+      - name: Validate the desktop file
+        run: desktop-file-validate data/*.desktop
+
+  release:
+    # Publishes a release when __version__ in nitro_panel.py has no tag yet
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 nitro_panel.py --version | cut -d' ' -f2)
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released, nothing to do"
+            exit 0
+          fi
+          python3 scripts/release_notes.py "$version" > notes.md
+          gh release create "v$version" --target "$GITHUB_SHA" \
+            --title "Nitro Panel $version" --notes-file notes.md

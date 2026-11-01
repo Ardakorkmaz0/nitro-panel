@@ -1,5 +1,7 @@
 # Nitro Panel
 
+[![CI](https://github.com/Ardakorkmaz0/nitro-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/Ardakorkmaz0/nitro-panel/actions/workflows/ci.yml)
+
 A small GTK control panel for Acer Nitro and Predator laptops on Linux: keyboard RGB, power modes, fans and battery settings in one window.
 
 Nitro Panel is only the front end. The hardware access comes from the [Linuwu-Sense](https://github.com/0x7375646F/Linuwu-Sense) kernel module, which has to be installed first.
@@ -118,6 +120,18 @@ The **Automatic** settings and the NitroSense key notification need `nitro-panel
 | Power mode asks for a password every time | The tmpfiles rule is not installed. Run `sudo make install` again. |
 | No notification when pressing the NitroSense key | `systemctl --user status nitro-panel-daemon` should be active, and `journalctl -k -n 5` must work without sudo. |
 | A profile is not applied when the charger changes | `journalctl --user -u nitro-panel-daemon` shows what the service did. |
+
+## Development
+
+The tests need no Acer hardware: they run against a fake copy of the driver's sysfs files.
+
+```bash
+pytest
+```
+
+The window tests need a display and are skipped without one. On every push and pull request, GitHub Actions runs all tests on Arch Linux, lints the Plasma widget and validates the desktop file.
+
+**Releasing:** raise `__version__` in `nitro_panel.py` (the only place the version is written), add an entry for it to [`CHANGELOG.md`](CHANGELOG.md) and push to `main`. When the tests pass, GitHub Actions tags the commit and publishes the release, using the changelog entry as release notes.
 
 ## Credits
 
