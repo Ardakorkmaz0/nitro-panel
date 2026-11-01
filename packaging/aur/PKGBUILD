@@ -1,0 +1,26 @@
+# Maintainer: ArdaKorkmaz0 <https://github.com/Ardakorkmaz0>
+pkgname=nitro-panel-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="GTK control panel for Acer Nitro and Predator laptops: keyboard RGB, power modes, fans and battery"
+arch=('any')
+url="https://github.com/Ardakorkmaz0/nitro-panel"
+license=('GPL-3.0-or-later')
+depends=('python' 'python-gobject' 'gtk3')
+makedepends=('git')
+optdepends=('linuwu-sense-dkms-git: the kernel module this panel controls')
+provides=('nitro-panel')
+conflicts=('nitro-panel')
+install=nitro-panel.install
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd nitro-panel
+  git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+}
+
+package() {
+  cd nitro-panel
+  make DESTDIR="$pkgdir" PREFIX=/usr install
+}

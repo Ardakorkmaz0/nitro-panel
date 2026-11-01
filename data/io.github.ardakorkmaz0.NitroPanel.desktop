@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Nitro Panel
+GenericName=Laptop Control Panel
+Comment=Keyboard RGB, power modes, fans and battery for Acer Nitro and Predator laptops
+Exec=nitro-panel
+Icon=input-keyboard
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=acer;nitro;predator;rgb;keyboard;fan;battery;power;
+StartupWMClass=io.github.ardakorkmaz0.NitroPanel

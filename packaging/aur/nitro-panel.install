@@ -1,0 +1,10 @@
+post_install() {
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/nitro-panel.conf 2>/dev/null || true
+  echo ">> Nitro Panel needs the Linuwu-Sense kernel module."
+  echo ">> Add yourself to its group, then log out and back in:"
+  echo ">>   sudo usermod -aG linuwu_sense \$USER"
+}
+
+post_upgrade() {
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/nitro-panel.conf 2>/dev/null || true
+}

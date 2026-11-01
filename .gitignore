@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+packaging/aur/src/
+packaging/aur/pkg/
+packaging/aur/nitro-panel/
+packaging/aur/*.pkg.tar.*
