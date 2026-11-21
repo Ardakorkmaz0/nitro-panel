@@ -36,11 +36,14 @@ On KDE Plasma 6, `make install` also installs a system tray widget, laid out lik
 
 The widget does nothing on its own: it reads `nitro-panel --status` and runs the command line options below.
 
+Every value Linuwu-Sense reports is a call into the BIOS (ACPI WMI), so the widget reads only what is on screen. While the popup is closed it reads the power mode every 10 seconds for the icon and the sensors every 30 seconds for the tooltip. The keyboard light, charge limit and light timeout are read when the popup opens, every 10 seconds while it stays open, and after you change something.
+
 ## Command line
 
 ```text
 nitro-panel                         open the panel window
 nitro-panel --status                print the current state as JSON
+nitro-panel --status live|mode      only the power mode and sensors, or only the power mode
 nitro-panel --mode MODE             eco, quiet, balanced, performance or turbo
 nitro-panel --profile NAME          apply a saved profile
 nitro-panel --kb-brightness 0-100   keyboard light brightness, colors stay the same

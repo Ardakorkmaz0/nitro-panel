@@ -33,6 +33,51 @@ def test_status_json(fake_sys, capsys):
     assert status["profiles"] == ["Battery saver", "Gaming", "Quiet"]
 
 
+SETTINGS = {"keyboard_brightness", "keyboard_timeout", "battery_limit"}
+
+
+def test_status_parts(fake_sys, capsys):
+    """The widget's frequent reads leave out what it does not show."""
+    full = json.loads(run(capsys, "--status")[1])
+    live = json.loads(run(capsys, "--status", "live")[1])
+    mode = json.loads(run(capsys, "--status", "mode")[1])
+    assert live["mode"] == mode["mode"] == "balanced"
+    assert live["sensors"] == full["sensors"]
+    assert set(live) == set(full) - SETTINGS
+    assert set(mode) == set(full) - SETTINGS - {"sensors"}
+
+
+def test_status_parts_skip_bios_reads(fake_sys, capsys, monkeypatch):
+    """On real hardware each of these files is an ACPI WMI call into the BIOS."""
+    seen = set()
+    real_read = np.read
+    monkeypatch.setattr(np, "read", lambda path: seen.add(path) or real_read(path))
+    settings = {str(p) for p in (fake_sys.four_zone, fake_sys.per_zone,
+                                 fake_sys.limiter, fake_sys.timeout)}
+    sensors = {str(fake_sys.hwmon / name)
+               for name in ("temp1_input", "temp2_input", "fan1_input", "fan2_input")}
+
+    run(capsys, "--status", "mode")
+    assert str(fake_sys.profile) in seen
+    assert not seen & (settings | sensors)
+
+    seen.clear()
+    run(capsys, "--status", "live")
+    assert sensors <= seen
+    assert not seen & settings
+
+    seen.clear()
+    run(capsys, "--status")
+    assert settings | sensors <= seen
+
+
+def test_status_rejects_unknown_part(fake_sys, capsys):
+    code, out, err = run(capsys, "--status", "all")
+    assert code == 1
+    assert out == ""
+    assert "--status live" in err
+
+
 def test_mode_accepts_labels(fake_sys, capsys):
     assert run(capsys, "--mode", "Turbo")[0] == 0
     assert fake_sys.read(fake_sys.profile) == "performance"
@@ -121,7 +166,7 @@ def test_command_line_never_loads_gtk(tmp_path):
     blocker.mkdir()
     (blocker / "__init__.py").write_text("raise ImportError('the command line must not import gi')\n")
     env = dict(os.environ, PYTHONPATH=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path / "config"))
-    for args in (["--version"], ["--help"], ["--status"]):
+    for args in (["--version"], ["--help"], ["--status", "mode"], ["--status", "live"], ["--status"]):
         result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env,
                                 capture_output=True, text=True)
         assert result.returncode == 0, result.stderr

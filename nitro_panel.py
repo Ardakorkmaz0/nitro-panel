@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 APP_ID = "io.github.ardakorkmaz0.NitroPanel"
 DAEMON_UNIT = "nitro-panel-daemon.service"
@@ -250,6 +250,7 @@ usage: nitro-panel [OPTION]
 Without an option, opens the panel window.
 
   --status                print the current state as JSON
+  --status live|mode      only the power mode and sensors, or only the power mode
   --mode MODE             set the power mode: eco, quiet, balanced, performance, turbo
   --profile NAME          apply a saved profile
   --kb-brightness 0-100   set the keyboard light brightness, keeping its colors
@@ -284,38 +285,60 @@ def keyboard_state():
         return None
 
 
-def status():
-    hwmon = find_hwmon("acer")
-    choices = (read(PLATFORM_CHOICES) or "").split()
-    keyboard = keyboard_state()
-    limiter = read(sense_path("battery_limiter"))
+# Parts of --status for callers that need less than everything
+STATUS_PARTS = ("mode", "live")
+
+
+def status(part=None):
+    """The current state for --status.
+
+    Linuwu-Sense answers nearly every read with an ACPI WMI call into the
+    BIOS: the power mode, each sensor, the keyboard, the charge limit and the
+    light timeout. The Plasma widget polls all day, so it asks only for what
+    it shows: "mode" reads only the power mode, "live" adds the sensors, and
+    no part reads everything. Keys a part leaves out are missing, not None
+    (None means this laptop lacks the setting).
+    """
     config = load_config()
-    timeout_path = sense_path("backlight_timeout")
-    timeout = read(timeout_path) if writable(timeout_path) else None
-
-    def sensor(name, scale=1):
-        value = read(f"{hwmon}/{name}") if hwmon else None
-        return int(value) // scale if value and value.lstrip("-").isdigit() else None
-
-    return {
+    choices = (read(PLATFORM_CHOICES) or "").split()
+    info = {
         "version": __version__,
         "available": os.path.exists(BASE),
         "writable": writable(PER_ZONE) or writable(sense_path("fan_speed")),
         "mode": read(PLATFORM_PROFILE),
         "modes": [{"id": m, "label": label, "available": m in choices} for m, label in POWER_MODES],
-        "keyboard_brightness": keyboard["brightness"] if keyboard else None,
         "keyboard_fine": bool(config.get("kb_fine")),
+        "profiles": sorted(config["profiles"], key=str.lower),
+    }
+    if part == "mode":
+        return info
+
+    hwmon = find_hwmon("acer")
+
+    def sensor(name, scale=1):
+        value = read(f"{hwmon}/{name}") if hwmon else None
+        return int(value) // scale if value and value.lstrip("-").isdigit() else None
+
+    info["sensors"] = {
+        "cpu_temp": sensor("temp1_input", 1000),
+        "gpu_temp": sensor("temp2_input", 1000),
+        "cpu_fan": sensor("fan1_input"),
+        "gpu_fan": sensor("fan2_input"),
+    }
+    if part == "live":
+        return info
+
+    keyboard = keyboard_state()
+    limiter = read(sense_path("battery_limiter"))
+    timeout_path = sense_path("backlight_timeout")
+    timeout = read(timeout_path) if writable(timeout_path) else None
+    info.update({
+        "keyboard_brightness": keyboard["brightness"] if keyboard else None,
         # None when the timeout cannot be changed (missing, root-only or unknown)
         "keyboard_timeout": {"1": True, "0": False}.get(timeout),
         "battery_limit": None if limiter is None else limiter == "1",
-        "sensors": {
-            "cpu_temp": sensor("temp1_input", 1000),
-            "gpu_temp": sensor("temp2_input", 1000),
-            "cpu_fan": sensor("fan1_input"),
-            "gpu_fan": sensor("fan2_input"),
-        },
-        "profiles": sorted(config["profiles"], key=str.lower),
-    }
+    })
+    return info
 
 
 def pkexec_power(mode):
@@ -350,7 +373,9 @@ def cli(args):
         elif option == "--version":
             print(f"nitro-panel {__version__}")
         elif option == "--status":
-            print(json.dumps(status()))
+            if value is not None and value not in STATUS_PARTS:
+                raise CliError("use --status, --status live or --status mode")
+            print(json.dumps(status(value)))
         elif value is None:
             raise CliError(f"{option} needs a value, see --help")
         elif option == "--mode":

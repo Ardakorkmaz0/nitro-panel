@@ -23,8 +23,9 @@ PlasmoidItem {
     readonly property string command: "nitro-panel"
     readonly property string statusCommand: command + " --status"
 
-    property var info: null      // the last --status output
+    property var info: null      // --status output, partial reads merged in
     property string error: ""
+    property int tick: 0         // counts timer rounds, to pick what to read
 
     readonly property var modes: info ? info.modes : []
     readonly property int modeIndex: modes.findIndex(m => m.id === info.mode)
@@ -46,7 +47,7 @@ PlasmoidItem {
             return error;
         const lines = ["Power mode: " + modeLabel];
         const s = info.sensors;
-        if (s.cpu_temp !== null && s.gpu_temp !== null)
+        if (s && s.cpu_temp !== null && s.gpu_temp !== null)
             lines.push("CPU " + s.cpu_temp + "°C · GPU " + s.gpu_temp + "°C");
         return lines.join("\n");
     }
@@ -68,8 +69,9 @@ PlasmoidItem {
         executable.connectSource(command + " " + args);
     }
 
-    function refresh() {
-        executable.connectSource(statusCommand);
+    // part: "mode", "live" or nothing for everything (see --help)
+    function refresh(part) {
+        executable.connectSource(part ? statusCommand + " " + part : statusCommand);
     }
 
     function openPanel() {
@@ -86,13 +88,14 @@ PlasmoidItem {
         onNewData: (source, data) => {
             disconnectSource(source);
             const failed = data["exit code"] !== 0;
-            if (source === root.statusCommand) {
+            if (source.startsWith(root.statusCommand)) {
                 if (failed) {
                     root.error = data.stderr.trim() || "The nitro-panel command was not found.";
                     return;
                 }
                 try {
-                    root.info = JSON.parse(data.stdout);
+                    // A partial read leaves out keys; keep their last values
+                    root.info = Object.assign({}, root.info, JSON.parse(data.stdout));
                 } catch (e) {
                     root.error = "nitro-panel --status gave unexpected output.";
                 }
@@ -104,16 +107,28 @@ PlasmoidItem {
         }
     }
 
-    // Quick while the popup is open, slow otherwise (only the icon and tooltip need it)
+    // Every value is an ACPI WMI call into the BIOS, so read only what is on
+    // screen. Closed: the power mode every 10 s for the icon, the sensors every
+    // 30 s for the tooltip. Open: the sensors every 2 s, everything every 10 s.
+    // Everything is also read on the first round, on opening and after a change.
     Timer {
         interval: root.expanded ? 2000 : 10000
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.refresh()
+        onTriggered: {
+            const round = root.tick++;
+            if (round === 0)
+                root.refresh();
+            else if (root.expanded)
+                root.refresh(round % 5 === 0 ? "" : "live");
+            else
+                root.refresh(round % 3 === 0 ? "live" : "mode");
+        }
     }
 
     onExpandedChanged: {
+        root.tick = 1;
         if (root.expanded)
             refresh();
     }

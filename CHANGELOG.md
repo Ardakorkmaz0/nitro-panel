@@ -3,6 +3,12 @@
 Each release on GitHub is published from its entry here. To release, raise
 `__version__` in `nitro_panel.py`, add an entry for it below and push to `main`.
 
+## 0.4.1 - 2026-11-22
+
+- The Plasma widget calls into the BIOS far less often. Linuwu-Sense answers almost every read with an ACPI WMI call, and the widget used to read everything every 10 seconds, all day: about 50 calls a minute. Now, while the popup is closed, it reads the power mode every 10 seconds and the sensors every 30 seconds, about 14 calls a minute. The keyboard, charge limit and light timeout are read when the popup opens, every 10 seconds while it stays open, and after a change.
+- The widget no longer fills the kernel log while the popup is closed. Linuwu-Sense logs two lines for every charge limit read and one for every light timeout read, so the old polling wrote about 26,000 lines a day, and with a small journal limit older entries were pushed out within days.
+- `--status live` prints only the power mode and sensors, `--status mode` only the power mode. Plain `--status` is unchanged.
+
 ## 0.4.0 - 2026-11-01
 
 - Keyboard light timeout: turn the light off after 30 seconds without typing, or keep it on. A switch in the panel's Keyboard tab and in the Plasma widget, and `--kb-timeout on|off` on the command line.
